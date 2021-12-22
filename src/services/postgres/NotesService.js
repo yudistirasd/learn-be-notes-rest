@@ -6,27 +6,9 @@ const { mapDBToModel } = require("../../utils");
 const { nanoid } = require('nanoid');
 
 class NotesService {
-  constructor() {
+  constructor(collaborationService) {
     this._pool = new Pool();
-  }
-
-  async verifyNoteOwner(id, owner) {
-    const query = {
-      text: 'select * from notes where id = $1',
-      values: [id]
-    };
-
-    const result = await this._pool.query(query);
-    
-    if(!result.rows.length) {
-      throw new NotFoundError('Resource yang anda minta tidak ditemukan');
-    }
-
-    const note = result.rows[0];
-    console.log("note owner : " + note.owner + "; owner : " + owner);
-    if(note.owner !== owner) {
-      throw new AuthorizationError('Anda tidak berhak mengakses resource ini');
-    }
+    this._collaborationService = collaborationService;
   }
 
   async addNote({title, body, tags, owner}) {
@@ -50,7 +32,10 @@ class NotesService {
 
   async getNotes(owner) {
     const query = {
-      text: "select * from notes where owner = $1",
+      text: `SELECT notes.* FROM notes
+      LEFT JOIN collaborations ON collaborations.note_id = notes.id
+      WHERE notes.owner = $1 OR collaborations.user_id = $1
+      GROUP BY notes.id`,
       values: [owner]
     };
 
@@ -63,7 +48,10 @@ class NotesService {
 
   async getNoteById(id) {
     const query = {
-      text: "select * from notes where id = $1",
+      text: `SELECT notes.*, users.username
+      FROM notes
+      LEFT JOIN users ON users.id = notes.owner
+      WHERE notes.id = $1`,
       values: [id]
     }
     const result = await this._pool.query(query);
@@ -100,6 +88,41 @@ class NotesService {
 
     if(!result.rows.length) {
       throw new NotFoundError("Catatan gagal dihapus. Id tidak ditemukan");
+    }
+  }
+
+  async verifyNoteOwner(id, owner) {
+    const query = {
+      text: 'select * from notes where id = $1',
+      values: [id]
+    };
+
+    const result = await this._pool.query(query);
+    
+    if(!result.rows.length) {
+      throw new NotFoundError('Resource yang anda minta tidak ditemukan');
+    }
+
+    const note = result.rows[0];
+    if(note.owner !== owner) {
+      throw new AuthorizationError('Anda tidak berhak mengakses resource ini');
+    }
+  }
+
+  async verifyNoteAccess(noteId, userId) {
+    try {
+      await this.verifyNoteOwner(noteId, userId);
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      
+      try {
+        await this._collaborationService.verifyCollaborator(noteId, userId);
+      } catch {
+        console.error(error);
+        throw error;
+      }
     }
   }
 }
